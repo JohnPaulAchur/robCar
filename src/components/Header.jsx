@@ -1,51 +1,130 @@
-import { Image, StyleSheet, TouchableOpacity, View, Modal, TextInput, Button, Alert, ActivityIndicator } from 'react-native';
-import React, { useState } from 'react';
+import { 
+    Image, 
+    StyleSheet, 
+    TouchableOpacity, 
+    View, 
+    Modal, 
+    TextInput, 
+    Button, 
+    Alert, 
+    ActivityIndicator, 
+    FlatList, 
+    Text 
+} from 'react-native';
+import React, { useState, useEffect } from 'react';
 import AntDesign from 'react-native-vector-icons/AntDesign';
 import Feather from 'react-native-vector-icons/Feather';
 import { useTheme } from '@react-navigation/native';
 import WifiManager from 'react-native-wifi-reborn';
 import { iconSizes, spacing } from '../constants/dimension';
+import { PermissionsAndroid } from 'react-native';
 
 const HeaderWithVideo = ({ toggleTheme, isDarkMode }) => {
     const { colors } = useTheme();
     const [isConnected, setIsConnected] = useState(false);
     const [modalVisible, setModalVisible] = useState(false);
+    const [availableNetworks, setAvailableNetworks] = useState([]);
     const [password, setPassword] = useState('');
+    const [selectedSSID, setSelectedSSID] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [isScanning, setIsScanning] = useState(false);
 
-    const connectToPi = async (password) => {
-        setIsLoading(true);
+    const requestLocationPermission = async () => {
         try {
-            await WifiManager.connectToProtectedSSID('YourPiHotspotName', password, false);
-            setIsConnected(true);
-            Alert.alert('Connected to Raspberry Pi!');
-        } catch (error) {
-            console.error('Connection error:', error);
-            Alert.alert('Failed to connect', 'Incorrect password or connection issue.');
-            setIsConnected(false);
-        } finally {
-            setIsLoading(false);
-            setModalVisible(false);
-            setPassword(''); // Clear password after submission
+            const granted = await PermissionsAndroid.request(
+                PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+                {
+                    title: 'Location Permission Required',
+                    message: 'This app needs access to your location to scan for Wi-Fi networks.',
+                    buttonPositive: 'OK',
+                }
+            );
+            return granted === PermissionsAndroid.RESULTS.GRANTED;
+        } catch (err) {
+            console.warn(err);
+            return false;
         }
     };
 
+    const checkWifiAndScan = async () => {
+        const isEnabled = await WifiManager.isEnabled();
+        if (!isEnabled) {
+            Alert.alert('Wi-Fi is off', 'Please turn on Wi-Fi to connect to a network.');
+            return;
+        }
+
+        const hasPermission = await requestLocationPermission();
+        if (!hasPermission) {
+            Alert.alert('Location Permission', 'Location permission is required to scan Wi-Fi networks.');
+            return;
+        }
+
+        startScanning();
+    };
+
+    const startScanning = async () => {
+        setIsScanning(true);
+        try {
+            const networks = await WifiManager.loadWifiList();
+            setAvailableNetworks(networks);
+            setModalVisible(true);
+        } catch (error) {
+            console.error('Failed to load Wi-Fi list:', error);
+            Alert.alert('Error', 'Failed to load Wi-Fi networks. Please try again.');
+        } finally {
+            setIsScanning(false);
+        }
+    };
+
+    const connectToNetwork = async () => {
+        if (password.length < 6) {
+            Alert.alert('Invalid Password', 'Password must be at least 6 characters long.');
+            return;
+        }
+        setIsLoading(true);
+        try {
+            await WifiManager.connectToProtectedSSID(selectedSSID, password, false);
+            setIsConnected(true);
+            Alert.alert('Success', `Connected to ${selectedSSID}!`);
+            setModalVisible(false);
+            setPassword('');
+        } catch (error) {
+            console.error('Connection error:', error);
+            Alert.alert('Connection Failed', 'Check your password or try again later.');
+            setIsConnected(false);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        const intervalId = setInterval(() => {
+            if (modalVisible && isScanning) {
+                startScanning();
+            }
+        }, 5000);
+
+        return () => clearInterval(intervalId);
+    }, [modalVisible, isScanning]);
+
     return (
         <View style={styles.container}>
-            <View style={[styles.header, { backgroundColor: isDarkMode ? '#000000' : '#FFFFFF' }]}>
+            <View style={[styles.header, { backgroundColor: isDarkMode ? colors.background : colors.card }]}>
                 <Image 
                     source={require('../assets/robcar_logo.png')} 
                     style={[styles.logo, { tintColor: isDarkMode ? '#fff' : '#000' }]}
                 />
                 <View style={styles.iconsContainer}>
                     <TouchableOpacity onPress={toggleTheme}>
-                        {isDarkMode ? (
-                            <Feather name={'moon'} size={iconSizes.md} color={'#fff'} accessibilityLabel="Toggle dark mode" />
-                        ) : (
-                            <Feather name={'sun'} size={iconSizes.md} color={'#000'} accessibilityLabel="Toggle light mode" />
-                        )}
+                        <Feather 
+                            name={isDarkMode ? 'moon' : 'sun'} 
+                            size={iconSizes.md} 
+                            color={isDarkMode ? '#fff' : '#000'} 
+                            accessibilityLabel="Toggle theme" 
+                            accessibilityHint={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'} 
+                        />
                     </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setModalVisible(true)} style={[styles.wifiIcon]}>
+                    <TouchableOpacity onPress={checkWifiAndScan} style={styles.wifiIcon}>
                         {isConnected ? (
                             <AntDesign name={'wifi'} size={iconSizes.lg} color={colors.iconPrimary} accessibilityLabel="Connected to WiFi" />
                         ) : (
@@ -55,33 +134,49 @@ const HeaderWithVideo = ({ toggleTheme, isDarkMode }) => {
                 </View>
             </View>
 
-            {/* Modal for Password Input */}
+            {/* Modal for Wi-Fi Selection */}
             <Modal
                 animationType="slide"
                 transparent={true}
                 visible={modalVisible}
                 onRequestClose={() => {
-                    setModalVisible(!modalVisible);
+                    if (!password && !isConnected) {
+                        setSelectedSSID(''); // Clear SSID if no password and not connected
+                    }
+                    setModalVisible(false);
                 }}
             >
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContainer}>
-                        <TextInput
-                            style={styles.input}
-                            placeholder="Enter Password"
-                            secureTextEntry
-                            value={password}
-                            onChangeText={setPassword}
+                        <FlatList
+                            data={availableNetworks}
+                            keyExtractor={(item) => item.BSSID}
+                            renderItem={({ item }) => (
+                                <TouchableOpacity onPress={() => {
+                                    setSelectedSSID(item.SSID);
+                                    setPassword(''); // Reset password when a new network is selected
+                                }}>
+                                    <View style={styles.networkItem}>
+                                        <Text>{item.SSID || 'Unknown Network'}</Text>
+                                    </View>
+                                </TouchableOpacity>
+                            )}
                         />
-                        {isLoading ? (
-                            <ActivityIndicator size="large" color={colors.iconPrimary} />
-                        ) : (
+                        {isScanning && <ActivityIndicator size="large" color={colors.iconPrimary} />}
+                        {selectedSSID ? (
                             <>
-                                <Button title="Connect" onPress={() => connectToPi(password)} />
-                                <View style={styles.buttonSpacing} />
-                                <Button title="Cancel" onPress={() => setModalVisible(false)} color="red" />
+                                <TextInput
+                                    style={styles.input}
+                                    placeholder="Enter Password"
+                                    secureTextEntry
+                                    value={password}
+                                    onChangeText={setPassword}
+                                    accessibilityLabel="Password input"
+                                />
+                                <Button title="Connect" onPress={connectToNetwork} />
                             </>
-                        )}
+                        ) : null}
+                        <Button title="Close" onPress={() => setModalVisible(false)} color="red" />
                     </View>
                 </View>
             </Modal>
@@ -142,7 +237,12 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
         borderRadius: 5,
     },
+    networkItem: {
+        padding: 10,
+        borderBottomColor: 'gray',
+        borderBottomWidth: 1, // Added border bottom for each network item
+    },
     buttonSpacing: {
-        marginVertical: 10, // Add space between buttons
+        marginVertical: 10,
     },
 });
